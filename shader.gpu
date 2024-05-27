@@ -1,10 +1,9 @@
-
-
 // Vertex shader
 const vertexShaderSource = `
 attribute vec3 vertex;
 attribute vec2 textureCoord;
 uniform mat4 ModelViewProjectionMatrix;
+uniform bool drawSphere;
 varying vec2 texInterp;
 
 void main() {
@@ -24,6 +23,11 @@ const fragmentShaderSource = `
 uniform vec4 color;
 uniform sampler2D tmu;
 varying vec2 texInterp;
+uniform bool drawSphere;
 void main() {
-    gl_FragColor = texture2D(tmu, texInterp);
+    if (drawSphere) {
+        gl_FragColor = color;
+      } else {
+        gl_FragColor = texture2D(tmu, texInterp);
+      }
 }`;

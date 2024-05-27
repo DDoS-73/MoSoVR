@@ -10,6 +10,15 @@ let imageTexture, videoTexture;
 let video;
 let videoSurface;
 
+let audioContext;
+let audioSource;
+let audioPanner;
+let audioFilter;
+let audioPosition;
+
+let sphere;
+let sphereRotation;
+let music;
 
 function deg2rad(angle) {
     return angle * Math.PI / 180;
@@ -41,6 +50,7 @@ function Model(name) {
     this.iVertexBuffer = gl.createBuffer();
     this.iTextureBuffer = gl.createBuffer();
     this.count = 0;
+    this.verticesLength = 0;
 
     this.BufferData = function (vertices, texture) {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
@@ -50,6 +60,13 @@ function Model(name) {
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.iTextureBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texture), gl.STREAM_DRAW);
+    }
+
+    this.BufferDataSphere = function(surfData) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(surfData), gl.STREAM_DRAW);
+
+        this.verticesLength = surfData.length / 3;
     }
 
     this.Draw = function () {
@@ -64,6 +81,14 @@ function Model(name) {
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, this.count);
     }
+
+    this.DrawSphere = function () {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
+        gl.vertexAttribPointer(shProgram.iAttribVertex, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(shProgram.iAttribVertex);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, this.verticesLength);
+    };
 }
 
 
@@ -79,6 +104,8 @@ function ShaderProgram(name, program) {
     this.iColor = -1;
     // Location of the uniform matrix representing the combined transformation.
     this.iModelViewProjectionMatrix = -1;
+
+    this.iDrawSphere = false;
 
     this.Use = function () {
         gl.useProgram(this.prog);
@@ -180,6 +207,10 @@ function draw(animate = false) {
     gl.uniformMatrix4fv(shProgram.iModelViewProjectionMatrix, false, modelViewProjection);
     gl.colorMask(true, false, false, false);
     surface.Draw();
+    gl.uniform4fv(shProgram.iColor, [1.0, 1.0, 0.0, 1]);
+    gl.uniform1i(shProgram.iDrawSphere, true);
+    sphere.DrawSphere();
+    gl.uniform1i(shProgram.iDrawSphere, false);
     gl.clear(gl.DEPTH_BUFFER_BIT);
 
     camera.ApplyRightFrustum();
@@ -187,6 +218,9 @@ function draw(animate = false) {
     gl.uniformMatrix4fv(shProgram.iModelViewProjectionMatrix, false, modelViewProjection);
     gl.colorMask(false, true, true, false);
     surface.Draw();
+    gl.uniform1i(shProgram.iDrawSphere, true);
+    sphere.DrawSphere();
+    gl.uniform1i(shProgram.iDrawSphere, false);
     gl.colorMask(true, true, true, true);
     /* Draw the six faces of a cube, with different colors. */
     gl.uniform4fv(shProgram.iColor, [1, 1, 0, 1]);
@@ -260,6 +294,7 @@ function initGL() {
     shProgram.iColor = gl.getUniformLocation(prog, "color");
     shProgram.iAttribTexture = gl.getAttribLocation(prog, "textureCoord");
     shProgram.iTMU = gl.getUniformLocation(prog, "tmu");
+    shProgram.iDrawSphere = gl.getUniformLocation(prog, "drawSphere");
 
     surface = new Model('Surface');
     videoSurface = new Model('Surface');
@@ -275,11 +310,44 @@ function initGL() {
     CreateWebCamera();
 
     camera = new StereoCamera(1000, 100, 1, 0.45, 1, 15,)
+    music = {
+        filter: true,
+        play: playMusic
+    }
     gui = new GUI()
     gui.add(camera, 'mConvergence', 350, 1000, 10).name('Convergence').onChange(draw)
     gui.add(camera, 'mEyeSeparation', 0, 100).name('Eye Separation').onChange(draw)
     gui.add(camera, 'mFOV', 0.1, 3.1).name('Field Of View').onChange(draw)
     gui.add(camera, 'mNearClippingDistance', 6, 14).name('Near Clipping Distance').onChange(draw)
+
+    gui.add( music, 'filter' )
+        .name( 'Filter' )
+        .onChange( value => {
+            if (value) {
+                if (audioContext) {
+                    audioSource.disconnect();
+                    audioPanner.disconnect();
+                    audioSource.connect(audioFilter);
+                    audioFilter.connect(audioPanner);
+                    audioFilter.connect(audioContext.destination);
+                    audioPanner.setPosition(audioPosition.x, audioPosition.y, audioPosition.z);
+                    audioPanner.setOrientation(0,0,0);
+                }
+            } else {
+                if (audioContext) {
+                    audioSource.disconnect();
+                    audioPanner.disconnect();
+                    audioSource.connect(audioPanner);
+                    audioPanner.connect(audioContext.destination);
+                    audioPanner.setPosition(audioPosition.x, audioPosition.y, audioPosition.z);
+                    audioPanner.setOrientation(0,0,0);
+                }
+            }
+        } );
+    gui.add(music, 'play');
+
+    sphere = new Model('Sphere');
+    sphere.BufferDataSphere(CreateSphereData());
 
     gl.enable(gl.DEPTH_TEST);
 }
@@ -322,6 +390,8 @@ function createProgram(gl, vShader, fShader) {
  */
 function init() {
     let canvas;
+
+    initPositions();
     try {
         canvas = document.getElementById("webglcanvas");
         gl = canvas.getContext("webgl");
@@ -343,8 +413,8 @@ function init() {
         return;
     }
 
-    spaceball = new TrackballRotator(canvas, draw, 0);
 
+    spaceball = new TrackballRotator(canvas, draw, 0);
     draw(true);
 }
 
@@ -364,9 +434,137 @@ function CreateWebCamera() {
     window.vid = video;
     navigator.getUserMedia({ video: true, audio: false }, function (stream) {
         video.srcObject = stream;
-        track = stream.getTracks()[0];
     }, function (e) {
         console.error('Rejected!', e);
     });
     return video;
+}
+
+let parameters = {};
+function createAudio() {
+    audioContext = new window.AudioContext();
+    audioSource = audioContext.createBufferSource();
+    createFilter();
+    createAudioPanner();
+    const request = new XMLHttpRequest();
+    request.open("GET", "https://raw.githubusercontent.com/DDoS-73/MoSoVR/CGW/music.mp3", true);
+    request.responseType = "arraybuffer";
+    request.onload = () => {
+        const audioData = request.response;
+        audioContext.decodeAudioData(audioData, (buffer) => {
+                audioSource.buffer = buffer;
+                if (music.filter) {
+                    audioSource.connect(audioFilter);
+                    audioFilter.connect(audioPanner);
+                } else {
+                    audioSource.connect(audioPanner);
+                }
+                audioPanner.connect(audioContext.destination);
+                audioSource.loop = true;
+            }
+        );
+    };
+    request.send();
+}
+
+function createFilter() {
+    audioFilter = audioContext.createBiquadFilter();
+    audioFilter.type = "lowpass";
+    audioFilter.frequency.value = 1000;
+    audioFilter.Q.value = 1;
+}
+function createAudioPanner() {
+    audioPanner = audioContext.createPanner();
+    audioPanner.panningModel = "HRTF";
+    audioPanner.distanceModel = "inverse";
+    audioPanner.refDistance = 1;
+    audioPanner.maxDistance = 1000;
+    audioPanner.rolloffFactor = 1;
+    audioPanner.coneInnerAngle = 360;
+    audioPanner.coneOuterAngle = 0;
+    audioPanner.coneOuterGain = 0;
+
+
+    audioPanner.setPosition(audioPosition.x, audioPosition.y, audioPosition.z);
+    audioPanner.setOrientation(0,0,0);
+}
+
+function playMusic() {
+    if (parameters.audioPlay) {
+        audioContext.suspend();
+    } else {
+        if (audioContext) {
+            audioContext.resume();
+        } else {
+            createAudio();
+            audioSource.start(0);
+        }
+    }
+    parameters.audioPlay = !parameters.audioPlay;
+
+    setTimeout(() => {
+        let step = 0.05;
+        let xInterval = setInterval(() => {
+            sphereRotation.x += step;
+
+            if (sphereRotation.x > 2 || sphereRotation.x < -2) {
+                step = -step;
+            }
+            audioPosition.x = sphereRotation.x;
+
+            audioPanner.setPosition(audioPosition.x, audioPosition.y, audioPosition.z);
+            audioPanner.setOrientation(0,0,0);
+
+            sphere.BufferDataSphere(CreateSphereData());
+            draw();
+        }, 100);
+
+        setTimeout(() => {
+            clearInterval(xInterval);
+            setInterval(() => {
+                sphereRotation.y += step;
+
+                if (sphereRotation.y > 2 || sphereRotation.y < -2) {
+                    step = -step;
+                }
+                audioPosition.y = sphereRotation.y;
+
+                audioPanner.setPosition(audioPosition.x, audioPosition.y, audioPosition.z);
+                audioPanner.setOrientation(0,0,0);
+
+                sphere.BufferDataSphere(CreateSphereData());
+                draw();
+            }, 100);
+        }, 30000)
+    }, 2000);
+}
+
+function initPositions() {
+    sphereRotation = new Position(0, 0, 0);
+    audioPosition = new Position(0, 0, 0);
+}
+
+function CreateSphereData()
+{
+    let radius = 0.2;
+    let res = [];
+    for (let u = 0; u <= 360; u += 10) {
+        for(let v = 0; v <= 360; v += 10) {
+            let uRad = deg2rad(u);
+            let vRad = deg2rad(v);
+            let uRad1 = deg2rad(u + 10);
+            let vRad2 = deg2rad(v + 10);
+            res.push(sphereRotation.x + (radius *  Math.cos(uRad) * Math.sin(vRad)), sphereRotation.y + (radius *  Math.sin(uRad) * Math.sin(vRad)), sphereRotation.z + (radius *  Math.cos(vRad)));
+            res.push(sphereRotation.x + (radius *  Math.cos(uRad1) * Math.sin(vRad2)), sphereRotation.y + (radius *  Math.sin(uRad1) * Math.sin(vRad2)), sphereRotation.z + (radius *  Math.cos(vRad2)));
+        }
+    }
+    return res;
+}
+
+class Position {
+    constructor(x, y, z) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
 }
